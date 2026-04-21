@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Check if user is authenticated
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // Check if user ID matches the document owner
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    // User collection: each user document contains account info
+    match /users/{userId} {
+      allow read, write: if isAuth() && isOwner(userId);
+      
+      // Transactions subcollection
+      match /transactions/{transactionId} {
+        allow read, write: if isAuth() && isOwner(userId);
+      }
+      
+      // Budgets subcollection
+      match /budgets/{budgetId} {
+        allow read, write: if isAuth() && isOwner(userId);
+      }
+      
+      // Pots subcollection
+      match /pots/{potId} {
+        allow read, write: if isAuth() && isOwner(userId);
+      }
+      
+      // Recurring Bills subcollection
+      match /recurringBills/{billId} {
+        allow read, write: if isAuth() && isOwner(userId);
+      }
+    }
+
+    // Catch-all: deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
