@@ -55,8 +55,8 @@ export interface FinanceData {
 }
 
 export interface UserRecord {
-  auth: AuthUser;
   data: FinanceData;
+  email: string;
 }
 
 export interface FinanceDatabase {

@@ -6,10 +6,19 @@ import {
   collection,
   runTransaction,
   getFirestore,
+  setDoc,
   type Firestore,
 } from 'firebase/firestore'
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  type Auth,
+  type User as FirebaseUser,
+} from 'firebase/auth'
 import type {
-  AuthUser,
   Budget,
   BudgetInput,
   FinanceData,
@@ -21,8 +30,6 @@ import type {
   TransactionInput,
   UserId,
 } from '../types'
-
-const SESSION_KEY = 'pf_session_v1'
 
 const emptyData = (): FinanceData => ({
   transactions: [],
@@ -36,37 +43,6 @@ const createId = (): string => {
     return crypto.randomUUID()
   }
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-const parseJson = <T>(raw: string | null, fallback: T): T => {
-  if (!raw) {
-    return fallback
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    if (parsed && typeof parsed === 'object') {
-      return parsed as T
-    }
-    return fallback
-  } catch {
-    return fallback
-  }
-}
-
-const hashPassword = async (password: string): Promise<string> => {
-  if (!password) {
-    return ''
-  }
-
-  if (typeof crypto === 'undefined' || !crypto.subtle) {
-    return password
-  }
-
-  const encoded = new TextEncoder().encode(password)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  return hashArray.map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 const firebaseConfig = {
@@ -88,6 +64,7 @@ const isFirebaseConfigured = Boolean(
 )
 
 let firestoreDb: Firestore | null = null
+let firebaseAuth: Auth | null = null
 
 const getDb = (): Firestore | null => {
   if (!isFirebaseConfigured) {
@@ -102,15 +79,28 @@ const getDb = (): Firestore | null => {
   return firestoreDb
 }
 
+const getAuth_ = (): Auth | null => {
+  if (!isFirebaseConfigured) {
+    return null
+  }
+
+  if (!firebaseAuth) {
+    const app = initializeApp(firebaseConfig)
+    firebaseAuth = getAuth(app)
+  }
+
+  return firebaseAuth
+}
+
 const usersCollectionName = 'users'
-const emailLookupCollectionName = 'emailToUserId'
 
 const firebaseNotConfiguredMessage =
   'Firebase is not configured. Add VITE_FIREBASE_* variables before using cloud storage.'
 
-interface UserSummaryRecord {
-  auth: AuthUser
+interface UserFinanceRecord {
   data: FinanceData
+  userEmail: string
+  createdAt: string
 }
 
 export interface AuthResult {
@@ -119,104 +109,76 @@ export interface AuthResult {
   userId?: UserId
 }
 
-export const getSessionUserId = (): UserId | null => {
-  const session = parseJson<{ userId?: string } | null>(localStorage.getItem(SESSION_KEY), null)
-  if (!session?.userId || typeof session.userId !== 'string') {
-    return null
-  }
-  return session.userId
-}
-
-export const setSessionUserId = (userId: UserId): void => {
-  localStorage.setItem(SESSION_KEY, JSON.stringify({ userId }))
-}
-
-export const clearSessionUserId = (): void => {
-  localStorage.removeItem(SESSION_KEY)
-}
-
-export const loadSessionUser = async (): Promise<UserSummaryRecord | null> => {
-  const db = getDb()
-  if (!db) {
-    return null
-  }
-
-  const userId = getSessionUserId()
-  if (!userId) {
-    return null
-  }
-
-  const userSnapshot = await getDoc(doc(db, usersCollectionName, userId))
-  if (!userSnapshot.exists()) {
-    return null
-  }
-
-  return userSnapshot.data() as UserSummaryRecord
+export interface UserSummaryRecord {
+  data: FinanceData
+  email: string
 }
 
 export const createAccount = async (name: string, email: string, password: string): Promise<AuthResult> => {
+  const auth = getAuth_()
   const db = getDb()
-  if (!db) {
+
+  if (!auth || !db) {
     return { ok: false, message: firebaseNotConfiguredMessage }
   }
 
-  const normalizedEmail = email.trim().toLowerCase()
-  const emailRef = doc(db, emailLookupCollectionName, normalizedEmail)
-  const existingEmail = await getDoc(emailRef)
-  if (existingEmail.exists()) {
-    return { ok: false, message: 'Account already exists for this email.' }
+  try {
+    const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password)
+    const userId = userCredential.user.uid
+
+    const record: UserFinanceRecord = {
+      data: emptyData(),
+      userEmail: email.trim().toLowerCase(),
+      createdAt: new Date().toISOString(),
+    }
+
+    await setDoc(doc(db, usersCollectionName, userId), record)
+
+    return { ok: true, message: `Welcome, ${name.trim()}!`, userId }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create account.'
+    return { ok: false, message }
   }
-
-  const userId = createId()
-  const auth: AuthUser = {
-    id: userId,
-    name: name.trim(),
-    email: normalizedEmail,
-    password: await hashPassword(password),
-    createdAt: new Date().toISOString(),
-  }
-
-  const record: UserSummaryRecord = {
-    auth,
-    data: emptyData(),
-  }
-
-  await runTransaction(db, async (transaction) => {
-    const userRef = doc(db, usersCollectionName, userId)
-    transaction.set(userRef, record)
-    transaction.set(emailRef, { userId })
-  })
-
-  return { ok: true, message: 'Account created successfully.', userId }
 }
 
 export const login = async (email: string, password: string): Promise<AuthResult> => {
-  const db = getDb()
-  if (!db) {
+  const auth = getAuth_()
+
+  if (!auth) {
     return { ok: false, message: firebaseNotConfiguredMessage }
   }
 
-  const normalizedEmail = email.trim().toLowerCase()
-  const emailSnapshot = await getDoc(doc(db, emailLookupCollectionName, normalizedEmail))
+  try {
+    const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password)
+    const userId = userCredential.user.uid
+    return { ok: true, message: 'Logged in successfully.', userId }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Login failed.'
+    return { ok: false, message }
+  }
+}
 
-  if (!emailSnapshot.exists()) {
-    return { ok: false, message: 'No account found for this email.' }
+export const logout = async (): Promise<void> => {
+  const auth = getAuth_()
+  if (!auth) {
+    return
   }
 
-  const { userId } = emailSnapshot.data() as { userId: string }
-  const userSnapshot = await getDoc(doc(db, usersCollectionName, userId))
-  if (!userSnapshot.exists()) {
-    return { ok: false, message: 'No account found for this email.' }
+  try {
+    await signOut(auth)
+  } catch (error) {
+    console.error('Logout error:', error)
+  }
+}
+
+export const onAuthChange = (callback: (user: FirebaseUser | null) => void): (() => void) => {
+  const auth = getAuth_()
+  if (!auth) {
+    callback(null)
+    return () => {}
   }
 
-  const user = userSnapshot.data() as UserSummaryRecord
-  const incomingHash = await hashPassword(password)
-
-  if (user.auth.password !== incomingHash) {
-    return { ok: false, message: 'Invalid password.' }
-  }
-
-  return { ok: true, message: `Welcome back, ${user.auth.name}.`, userId }
+  return onAuthStateChanged(auth, callback)
 }
 
 export const getUserRecord = async (userId: UserId): Promise<UserSummaryRecord | null> => {
@@ -230,13 +192,17 @@ export const getUserRecord = async (userId: UserId): Promise<UserSummaryRecord |
     return null
   }
 
-  return userSnapshot.data() as UserSummaryRecord
+  const docData = userSnapshot.data() as UserFinanceRecord
+  return {
+    data: docData.data,
+    email: docData.userEmail,
+  }
 }
 
 const saveUserData = async (
   userId: UserId,
   updater: (existing: FinanceData) => FinanceData,
-): Promise<UserSummaryRecord | null> => {
+): Promise<UserFinanceRecord | null> => {
   const db = getDb()
   if (!db) {
     return null
@@ -250,8 +216,8 @@ const saveUserData = async (
       return null
     }
 
-    const existing = userSnapshot.data() as UserSummaryRecord
-    const updated: UserSummaryRecord = {
+    const existing = userSnapshot.data() as UserFinanceRecord
+    const updated: UserFinanceRecord = {
       ...existing,
       data: updater(existing.data),
     }
@@ -522,12 +488,12 @@ export const restoreRecurringBill = async (userId: UserId, recurringBill: Recurr
   return Boolean(updated && restored)
 }
 
-export const getAllUsers = async (): Promise<UserSummaryRecord[]> => {
+export const getAllUsers = async (): Promise<UserFinanceRecord[]> => {
   const db = getDb()
   if (!db) {
     return []
   }
 
   const snapshots = await getDocs(collection(db, usersCollectionName))
-  return snapshots.docs.map((snapshot) => snapshot.data() as UserSummaryRecord)
+  return snapshots.docs.map((snapshot) => snapshot.data() as UserFinanceRecord)
 }

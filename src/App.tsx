@@ -8,18 +8,17 @@ import {
   addPot,
   addRecurringBill,
   addTransaction,
-  clearSessionUserId,
   createAccount,
   deleteBudget,
   deletePot,
   deleteRecurringBill,
   getUserRecord,
   login,
-  loadSessionUser,
+  logout,
+  onAuthChange,
   restoreBudget,
   restorePot,
   restoreRecurringBill,
-  setSessionUserId,
   updateBudget,
   updateRecurringBill,
   updatePot,
@@ -244,6 +243,7 @@ function App() {
 
   const [activeTab, setActiveTab] = useState<AppTab>('home')
   const [tabDirection, setTabDirection] = useState(1)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState<UserRecord | null>(null)
   const [activeModal, setActiveModal] = useState<FormModal>(null)
   const [dataFilters, setDataFilters] = useState<DataExplorerFilters>(defaultDataExplorerFilters)
@@ -292,11 +292,19 @@ function App() {
   const undoTimeoutRef = useRef<number | null>(null)
 
   useEffect(() => {
-    void (async () => {
-      const sessionUser = await loadSessionUser()
-      setCurrentUser(sessionUser)
+    const unsubscribe = onAuthChange(async (firebaseUser) => {
+      if (firebaseUser) {
+        setCurrentUserId(firebaseUser.uid)
+        const userRecord = await getUserRecord(firebaseUser.uid)
+        setCurrentUser(userRecord)
+      } else {
+        setCurrentUserId(null)
+        setCurrentUser(null)
+      }
       setLoading(false)
-    })()
+    })
+
+    return () => unsubscribe()
   }, [])
 
   useEffect(() => {
@@ -409,15 +417,14 @@ function App() {
       return
     }
 
-    setSessionUserId(result.userId)
-    await refreshCurrentUser(result.userId)
     setAuthValues({ name: '', email: '', password: '' })
     pushToast('success', result.message)
     setAuthBusy(false)
   }
 
-  const handleLogout = (): void => {
-    clearSessionUserId()
+  const handleLogout = async (): Promise<void> => {
+    await logout()
+    setCurrentUserId(null)
     setCurrentUser(null)
     setActiveTab('home')
     setDataFilters(defaultDataExplorerFilters)
@@ -449,10 +456,10 @@ function App() {
 
     const result =
       undoDelete.type === 'budget'
-        ? await restoreBudget(currentUser.auth.id, undoDelete.item)
+        ? await restoreBudget(currentUserId!, undoDelete.item)
         : undoDelete.type === 'pot'
-          ? await restorePot(currentUser.auth.id, undoDelete.item)
-          : await restoreRecurringBill(currentUser.auth.id, undoDelete.item)
+          ? await restorePot(currentUserId!, undoDelete.item)
+          : await restoreRecurringBill(currentUserId!, undoDelete.item)
 
     if (!result) {
       pushToast('error', 'Unable to undo deletion.')
@@ -464,7 +471,7 @@ function App() {
       undoTimeoutRef.current = null
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setUndoDelete(null)
     pushToast(
       'success',
@@ -487,13 +494,13 @@ function App() {
       date: transactionForm.date,
     }
 
-    const transaction = await addTransaction(currentUser.auth.id, input)
+    const transaction = await addTransaction(currentUserId!, input)
     if (!transaction) {
       pushToast('error', 'Unable to save transaction.')
       return
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setTransactionForm({ kind: 'expense', amount: '', category: '', note: '', date: today() })
     setActiveModal(null)
     pushToast('success', 'Transaction saved.')
@@ -511,13 +518,13 @@ function App() {
       limit: Number(budgetForm.limit),
     }
 
-    const budget = await addBudget(currentUser.auth.id, input)
+    const budget = await addBudget(currentUserId!, input)
     if (!budget) {
       pushToast('error', 'Unable to save budget.')
       return
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setBudgetForm({ category: '', limit: '' })
     setActiveModal(null)
     pushToast('success', 'Budget saved.')
@@ -535,13 +542,13 @@ function App() {
       current: Number(potForm.current),
     }
 
-    const pot = await addPot(currentUser.auth.id, input)
+    const pot = await addPot(currentUserId!, input)
     if (!pot) {
       pushToast('error', 'Unable to save pot.')
       return
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setPotForm({ name: '', target: '', current: '0' })
     setActiveModal(null)
     pushToast('success', 'Savings pot created.')
@@ -560,13 +567,13 @@ function App() {
       frequency: billForm.frequency,
     }
 
-    const recurringBill = await addRecurringBill(currentUser.auth.id, input)
+    const recurringBill = await addRecurringBill(currentUserId!, input)
     if (!recurringBill) {
       pushToast('error', 'Unable to save recurring bill.')
       return
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setBillForm({ title: '', amount: '', dueDay: '', frequency: 'monthly' })
     setActiveModal(null)
     pushToast('success', 'Recurring bill saved.')
@@ -598,7 +605,7 @@ function App() {
       return
     }
 
-    const updated = await updateBudget(currentUser.auth.id, editingBudget.id, {
+    const updated = await updateBudget(currentUserId!, editingBudget.id, {
       category: budgetEditForm.category.trim(),
       limit: Number(budgetEditForm.limit),
     })
@@ -608,7 +615,7 @@ function App() {
       return
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setEditingBudget(null)
     pushToast('success', 'Budget updated.')
   }
@@ -619,7 +626,7 @@ function App() {
       return
     }
 
-    const updated = await updatePot(currentUser.auth.id, editingPot.id, {
+    const updated = await updatePot(currentUserId!, editingPot.id, {
       name: potEditForm.name.trim(),
       target: Number(potEditForm.target),
       current: Number(potEditForm.current),
@@ -630,7 +637,7 @@ function App() {
       return
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setEditingPot(null)
     pushToast('success', 'Pot updated.')
   }
@@ -641,7 +648,7 @@ function App() {
       return
     }
 
-    const updated = await updateRecurringBill(currentUser.auth.id, editingBill.id, {
+    const updated = await updateRecurringBill(currentUserId!, editingBill.id, {
       title: billEditForm.title.trim(),
       amount: Number(billEditForm.amount),
       dueDay: Number(billEditForm.dueDay),
@@ -653,7 +660,7 @@ function App() {
       return
     }
 
-    await refreshCurrentUser(currentUser.auth.id)
+    await refreshCurrentUser(currentUserId!)
     setEditingBill(null)
     pushToast('success', 'Recurring bill updated.')
   }
@@ -669,13 +676,13 @@ function App() {
       description: 'This action is permanent and cannot be undone.',
       confirmLabel: 'Delete Budget',
       onConfirm: async () => {
-        const ok = await deleteBudget(currentUser.auth.id, budget.id)
+        const ok = await deleteBudget(currentUserId!, budget.id)
         if (!ok) {
           pushToast('error', 'Unable to delete budget.')
           return
         }
 
-        await refreshCurrentUser(currentUser.auth.id)
+        await refreshCurrentUser(currentUserId!)
         queueUndoDelete({ type: 'budget', item: budget })
         pushToast('info', 'Budget deleted. You can undo for 5 seconds.')
       },
@@ -693,13 +700,13 @@ function App() {
       description: 'This action is permanent and cannot be undone.',
       confirmLabel: 'Delete Pot',
       onConfirm: async () => {
-        const ok = await deletePot(currentUser.auth.id, pot.id)
+        const ok = await deletePot(currentUserId!, pot.id)
         if (!ok) {
           pushToast('error', 'Unable to delete pot.')
           return
         }
 
-        await refreshCurrentUser(currentUser.auth.id)
+        await refreshCurrentUser(currentUserId!)
         queueUndoDelete({ type: 'pot', item: pot })
         pushToast('info', 'Pot deleted. You can undo for 5 seconds.')
       },
@@ -717,13 +724,13 @@ function App() {
       description: 'This action is permanent and cannot be undone.',
       confirmLabel: 'Delete Bill',
       onConfirm: async () => {
-        const ok = await deleteRecurringBill(currentUser.auth.id, bill.id)
+        const ok = await deleteRecurringBill(currentUserId!, bill.id)
         if (!ok) {
           pushToast('error', 'Unable to delete recurring bill.')
           return
         }
 
-        await refreshCurrentUser(currentUser.auth.id)
+        await refreshCurrentUser(currentUserId!)
         queueUndoDelete({ type: 'bill', item: bill })
         pushToast('info', 'Recurring bill deleted. You can undo for 5 seconds.')
       },
@@ -849,7 +856,7 @@ function App() {
               rightSlot={
                 <div className="flex items-center gap-2">
                   <span className="hidden rounded-full border border-slate-300 bg-white/90 px-3 py-1 text-xs text-slate-700 sm:inline-flex">
-                    {currentUser.auth.email}
+                    {currentUser.email}
                   </span>
                   <motion.button
                     whileHover={{ scale: 1.03 }}
@@ -1080,3 +1087,5 @@ function App() {
 }
 
 export default App
+
+
